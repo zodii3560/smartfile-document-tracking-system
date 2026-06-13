@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { asyncHandler } from "../utils/asyncHandler";
 import prisma from "../config/prisma";
+import { recordFailedAttempt, resetFailedAttempts } from "../middleware/accountLockout.middleware";
 
 /**
  * @desc    Authenticate user & get token
@@ -11,19 +12,16 @@ import prisma from "../config/prisma";
 export const loginUser = asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body;
 
-  // 1. Guard clause: Check for input fields
-  if (!email || !password) {
-    res.status(400);
-    throw new Error("Please provide an email and password.");
-  }
-
   // 2. Locate user in database
   const user = await prisma.user.findUnique({
     where: { email },
   });
 
   // 3. Verify user existence and compare bcrypt hash
-  if (user && (await bcrypt.compare(password, user.password))) {
+  if (user && user.isActive && (await bcrypt.compare(password, user.password))) {
+    // Reset failed attempts on successful login
+    resetFailedAttempts(email);
+
    // 4. Generate JWT payload
     const token = jwt.sign(
       { id: user.id, role: user.role, departmentId: user.departmentId },
@@ -44,6 +42,9 @@ export const loginUser = asyncHandler(async (req: Request, res: Response) => {
       },
     });
   } else {
+    // Record failed attempt
+    recordFailedAttempt(email);
+
     // MODIFIED: Return 401 directly to prevent global middleware overrides
     return res.status(401).json({
       success: false,

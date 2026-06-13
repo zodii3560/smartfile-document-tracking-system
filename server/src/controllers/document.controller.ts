@@ -98,3 +98,243 @@ export const createDocument = asyncHandler(async (req: Request, res: Response) =
     throw error; 
   }
 });
+
+export const getDocuments = asyncHandler(async (req: Request, res: Response) => {
+  const documents = await prisma.document.findMany({
+    include: {
+      currentDepartment: true,
+      createdBy: {
+        select: { id: true, name: true, email: true }
+      }
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  return res.status(200).json({
+    success: true,
+    results: documents.length,
+    data: documents
+  });
+});
+
+export const getDocumentById = asyncHandler(async (req: Request, res: Response) => {
+  const documentId = Number(req.params.id);
+
+  if (isNaN(documentId)) {
+    return res.status(400).json({ success: false, message: 'Invalid document ID.' });
+  }
+
+  const document = await prisma.document.findUnique({
+    where: { id: documentId },
+    include: {
+      currentDepartment: true,
+      createdBy: {
+        select: { id: true, name: true, email: true }
+      },
+      transfers: {
+        include: {
+          fromDepartment: true,
+          toDepartment: true,
+          transferredBy: {
+            select: { id: true, name: true, email: true }
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      }
+    }
+  });
+
+  if (!document) {
+    return res.status(404).json({ success: false, message: 'Document not found.' });
+  }
+
+  return res.status(200).json({ success: true, data: document });
+});
+
+export const getDocumentHistory = asyncHandler(async (req: Request, res: Response) => {
+  const documentId = Number(req.params.id);
+
+  if (isNaN(documentId)) {
+    return res.status(400).json({ success: false, message: 'Invalid document ID.' });
+  }
+
+  const auditLogs = await prisma.auditLog.findMany({
+    where: { documentId },
+    include: {
+      user: {
+        select: { id: true, name: true, email: true }
+      }
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  return res.status(200).json({
+    success: true,
+    results: auditLogs.length,
+    data: auditLogs
+  });
+});
+
+export const transferDocument = asyncHandler(async (req: Request, res: Response) => {
+  const documentId = Number(req.params.id);
+  const { toDepartmentId, remarks } = req.body;
+
+  if (isNaN(documentId) || !toDepartmentId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Valid document ID and toDepartmentId are required.'
+    });
+  }
+
+  if (!req.user || !req.user.id) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: Missing user authentication context.'
+    });
+  }
+
+  const authenticatedUserId = req.user.id;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const document = await tx.document.findUnique({
+      where: { id: documentId },
+      include: { currentDepartment: true }
+    });
+
+    if (!document) {
+      throw new Error('DOCUMENT_NOT_FOUND');
+    }
+
+    const toDepartment = await tx.department.findUnique({
+      where: { id: Number(toDepartmentId) }
+    });
+
+    if (!toDepartment) {
+      throw new Error('DEPARTMENT_NOT_FOUND');
+    }
+
+    // Create transfer record with correct field names
+    const transfer = await tx.documentTransfer.create({
+      data: {
+        documentId: document.id,
+        fromDepartmentId: document.currentDepartmentId,
+        toDepartmentId: toDepartment.id,
+        transferredById: authenticatedUserId,
+        remarks
+      }
+    });
+
+    // Update document's current department
+    const updatedDocument = await tx.document.update({
+      where: { id: documentId },
+      data: { currentDepartmentId: toDepartment.id }
+    });
+
+    // Create audit log
+    await tx.auditLog.create({
+      data: {
+        documentId: document.id,
+        userId: authenticatedUserId,
+        action: 'DOCUMENT_TRANSFER',
+        details: `Document transferred from ${document.currentDepartment.name} to ${toDepartment.name}. Remarks: ${remarks || 'None'}`
+      }
+    });
+
+    return { transfer, updatedDocument };
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: 'Document transferred successfully.',
+    data: result
+  });
+});
+
+export const updateDocumentStatus = asyncHandler(async (req: Request, res: Response) => {
+  const documentId = Number(req.params.id);
+  const { status } = req.body;
+
+  if (isNaN(documentId) || !status) {
+    return res.status(400).json({
+      success: false,
+      message: 'Valid document ID and status are required.'
+    });
+  }
+
+  if (!req.user || !req.user.id) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: Missing user authentication context.'
+    });
+  }
+
+  const document = await prisma.document.findUnique({
+    where: { id: documentId }
+  });
+
+  if (!document) {
+    return res.status(404).json({ success: false, message: 'Document not found.' });
+  }
+
+  const updatedDocument = await prisma.document.update({
+    where: { id: documentId },
+    data: { status }
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      documentId: document.id,
+      userId: req.user.id,
+      action: 'STATUS_UPDATE',
+      details: `Document status updated to ${status}`
+    }
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: 'Document status updated successfully.',
+    data: updatedDocument
+  });
+});
+
+export const searchDocuments = asyncHandler(async (req: Request, res: Response) => {
+  const { query, status, priority, departmentId } = req.query;
+
+  const where: any = {};
+
+  if (query) {
+    where.OR = [
+      { trackingNumber: { contains: String(query), mode: 'insensitive' } },
+      { title: { contains: String(query), mode: 'insensitive' } }
+    ];
+  }
+
+  if (status) {
+    where.status = status;
+  }
+
+  if (priority) {
+    where.priority = priority;
+  }
+
+  if (departmentId) {
+    where.currentDepartmentId = Number(departmentId);
+  }
+
+  const documents = await prisma.document.findMany({
+    where,
+    include: {
+      currentDepartment: true,
+      createdBy: {
+        select: { id: true, name: true, email: true }
+      }
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  return res.status(200).json({
+    success: true,
+    results: documents.length,
+    data: documents
+  });
+});

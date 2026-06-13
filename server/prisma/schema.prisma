@@ -15,6 +15,9 @@ model Department {
   updatedAt   DateTime   @updatedAt
   documents   Document[]
   users       User[]
+  documentSequences DocumentSequence[]
+  transfersFrom DocumentTransfer[] @relation("FromDepartment")
+  transfersTo   DocumentTransfer[] @relation("ToDepartment")
 }
 
 enum UserRole {
@@ -30,8 +33,9 @@ model User {
   email            String             @unique
   password         String
   role             UserRole
+  isActive         Boolean  @default(true)
   departmentId     Int?               // Fixed to Int? to align with Department.id
-  department       Department?        @relation(fields: [departmentId], references: [id])
+  department       Department?        @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt // Removed duplicate blocks below this
   auditLogs        AuditLog[]         @relation("AuditUser")
@@ -52,22 +56,38 @@ model Document {
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   auditLogs           AuditLog[]
-  createdBy           User               @relation("DocumentCreator", fields: [createdById], references: [id])
+  createdBy           User               @relation("DocumentCreator", fields: [createdById], references: [id], onDelete: Restrict)
   // Relation field must use a distinct name from the FK scalar (was duplicate "currentDepartmentId")
-  currentDepartment   Department         @relation(fields: [currentDepartmentId], references: [id])
+  currentDepartment   Department         @relation(fields: [currentDepartmentId], references: [id], onDelete: Restrict)
   transfers           DocumentTransfer[]
+
+  @@index([trackingNumber])
+  @@index([status])
+  @@index([currentDepartmentId])
 }
 
 model DocumentTransfer {
-  id              Int      @id @default(autoincrement())
-  documentId      Int
-  fromDepartment  String
-  toDepartment    String
-  transferredById Int
-  remarks         String?
-  createdAt       DateTime @default(now())
-  document        Document @relation(fields: [documentId], references: [id])
-  transferredBy   User     @relation("TransferUser", fields: [transferredById], references: [id])
+  id                Int      @id @default(autoincrement())
+  documentId        Int
+  fromDepartmentId  Int
+  toDepartmentId    Int
+  transferredById   Int
+  remarks           String?
+  createdAt         DateTime @default(now())
+  document          Document   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  fromDepartment    Department @relation("FromDepartment", fields: [fromDepartmentId], references: [id], onDelete: Cascade)
+  toDepartment      Department @relation("ToDepartment", fields: [toDepartmentId], references: [id], onDelete: Cascade)
+  transferredBy     User       @relation("TransferUser", fields: [transferredById], references: [id], onDelete: Cascade)
+}
+model DocumentSequence {
+  id           Int        @id @default(autoincrement())
+  departmentId Int
+  year         Int
+  lastValue    Int        @default(0)
+
+  department   Department @relation(fields: [departmentId], references: [id])
+
+  @@unique([departmentId, year])
 }
 
 model AuditLog {
@@ -77,8 +97,11 @@ model AuditLog {
   action     String
   details    String?
   createdAt  DateTime @default(now())
-  document   Document @relation(fields: [documentId], references: [id])
-  user       User     @relation("AuditUser", fields: [userId], references: [id])
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user       User     @relation("AuditUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([action])
+  @@index([createdAt])
 }
 
 enum DocumentStatus {
